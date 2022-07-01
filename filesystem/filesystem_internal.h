@@ -13,8 +13,8 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 */
 
-#ifndef FILESYSTEM_H
-#define FILESYSTEM_H
+#ifndef FILESYSTEM_INTERNAL_H
+#define FILESYSTEM_INTERNAL_H
 
 /*
 ========================================================================
@@ -82,48 +82,6 @@ typedef struct
 	signed char	pad1;
 	char		name[WAD3_NAMELEN];	// must be null terminated
 } dlumpinfo_t;
-
-#include "custom.h"
-
-/*
-========================================================================
-.HPK archive format	(Hash PAK - HPK)
-
-List of compressed files, that can be identify only by TYPE_*
-
-<format>
-header:	dwadinfo_t[dwadinfo_t]
-file_1:	byte[dwadinfo_t[num]->disksize]
-file_2:	byte[dwadinfo_t[num]->disksize]
-file_3:	byte[dwadinfo_t[num]->disksize]
-...
-file_n:	byte[dwadinfo_t[num]->disksize]
-infotable	dlumpinfo_t[dwadinfo_t->numlumps]
-========================================================================
-*/
-
-#define IDHPAKHEADER	(('K'<<24)+('A'<<16)+('P'<<8)+'H') // little-endian "HPAK"
-#define IDHPAK_VERSION	1
-
-typedef struct
-{
-	int		ident;		// should be equal HPAK
-	int		version;
-	int		infotableofs;
-} hpak_header_t;
-
-typedef struct
-{
-	resource_t	resource;
-	int		filepos;
-	int		disksize;
-} hpak_lump_t;
-
-typedef struct
-{
-	int		count;
-	hpak_lump_t	*entries;		// variable sized.
-} hpak_info_t;
 
 #define ZIP_HEADER_LF (('K'<<8)+('P')+(0x03<<16)+(0x04<<24))
 #define ZIP_HEADER_SPANNED ((0x08<<24)+(0x07<<16)+('K'<<8)+'P')
@@ -197,4 +155,5 @@ typedef struct zip_header_eocd_s
 } zip_header_eocd_t;
 #pragma pack( pop )
 
-#endif//FILESYSTEM_H
+
+#endif // FILESYSTEM_INTERNAL_H

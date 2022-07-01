@@ -328,13 +328,13 @@ void Host_ChangeGame_f( void )
 	}
 
 	// validate gamedir
-	for( i = 0; i < SI.numgames; i++ )
+	for( i = 0; i < FI.numgames; i++ )
 	{
-		if( !Q_stricmp( SI.games[i]->gamefolder, Cmd_Argv( 1 )))
+		if( !Q_stricmp( FI.games[i]->gamefolder, Cmd_Argv( 1 )))
 			break;
 	}
 
-	if( i == SI.numgames )
+	if( i == FI.numgames )
 	{
 		Con_Printf( "%s not exist\n", Cmd_Argv( 1 ));
 	}
@@ -345,7 +345,7 @@ void Host_ChangeGame_f( void )
 	else
 	{
 		const char *arg1 = va( "%s%s", (host.type == HOST_NORMAL) ? "" : "#", Cmd_Argv( 1 ));
-		const char *arg2 = va( "change game to '%s'", SI.games[i]->title );
+		const char *arg2 = va( "change game to '%s'", FI.games[i]->title );
 
 		Host_NewInstance( arg1, arg2 );
 	}
@@ -1048,7 +1048,15 @@ void Host_InitCommon( int argc, char **argv, const char *progname, qboolean bCha
 #endif
 
 	FS_LoadGameInfo( NULL );
+
+	if( FS_FileExists( va( "%s.rc", SI.basedirName ), false ))
+		Q_strncpy( SI.rcName, SI.basedirName, sizeof( SI.rcName ));	// e.g. valve.rc
+	else Q_strncpy( SI.rcName, SI.exeName, sizeof( SI.rcName ));	// e.g. quake.rc
+
 	Q_strncpy( host.gamefolder, GI->gamefolder, sizeof( host.gamefolder ));
+
+	Image_CheckPaletteQ1 ();
+	Host_InitDecals ();	// reload decals
 
 	// DEPRECATED: by FWGS fork
 #if 0

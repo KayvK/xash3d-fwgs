@@ -980,7 +980,7 @@ pfnGetGamesList
 */
 static GAMEINFO ** GAME_EXPORT pfnGetGamesList( int *numGames )
 {
-	if( numGames ) *numGames = SI.numgames;
+	if( numGames ) *numGames = FI.numgames;
 	return gameui.modsInfo;
 }
 
@@ -1353,13 +1353,13 @@ qboolean UI_LoadProgs( void )
 	Cvar_FullSet( "host_gameuiloaded", "1", FCVAR_READ_ONLY );
 
 	// setup gameinfo
-	for( i = 0; i < SI.numgames; i++ )
+	for( i = 0; i < FI.numgames; i++ )
 	{
 		gameui.modsInfo[i] = Mem_Calloc( gameui.mempool, sizeof( GAMEINFO ));
-		UI_ConvertGameInfo( gameui.modsInfo[i], SI.games[i] );
+		UI_ConvertGameInfo( gameui.modsInfo[i], FI.games[i] );
 	}
 
-	UI_ConvertGameInfo( &gameui.gameInfo, SI.GameInfo ); // current gameinfo
+	UI_ConvertGameInfo( &gameui.gameInfo, FI.GameInfo ); // current gameinfo
 
 	// setup globals
 	gameui.globals->developer = host.allow_console;

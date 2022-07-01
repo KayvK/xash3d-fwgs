@@ -39,6 +39,18 @@ enum
 #define PFILE_TOKEN_MAX_LENGTH 1024
 
 //
+// build.c
+//
+//
+// build.c
+//
+int Q_buildnum( void );
+int Q_buildnum_compat( void );
+const char *Q_buildos( void );
+const char *Q_buildarch( void );
+const char *Q_buildcommit( void );
+
+//
 // crtlib.c
 //
 #define Q_strupr( in, out ) Q_strnupr( in, out, 99999 )
@@ -80,6 +92,7 @@ void COM_ExtractFilePath( const char *path, char *dest );
 const char *COM_FileWithoutPath( const char *in );
 void COM_StripExtension( char *path );
 void COM_RemoveLineFeed( char *str );
+void COM_FixSlashes( char *pname );
 void COM_PathSlashFix( char *path );
 char COM_Hex2Char( uint8_t hex );
 void COM_Hex2String( uint8_t hex, char *str );

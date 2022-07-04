@@ -67,6 +67,7 @@ typedef uint64_t longtime_t;
 
 #if defined(__GNUC__)
 	#ifdef __i386__
+		#define EXPORT_ __attribute__ ((visibility ("default")))
 		#define EXPORT __attribute__ ((visibility ("default"),force_align_arg_pointer))
 		#define GAME_EXPORT __attribute((force_align_arg_pointer))
 	#else
@@ -85,6 +86,10 @@ typedef uint64_t longtime_t;
 	#define GAME_EXPORT
 	#define _format(x)
 	#define NORETURN
+#endif
+
+#ifndef EXPORT_
+#define EXPORT_ EXPORT
 #endif
 
 #if ( __GNUC__ >= 3 )
@@ -138,7 +143,6 @@ typedef unsigned int	dword;
 typedef unsigned int	uint;
 typedef char		string[MAX_STRING];
 typedef struct file_s	file_t;		// normal file
-typedef struct wfile_s	wfile_t;		// wad file
 typedef struct stream_s	stream_t;		// sound stream for background music playing
 typedef off_t fs_offset_t;
 #if XASH_WIN32

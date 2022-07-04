@@ -16,6 +16,17 @@ GNU General Public License for more details.
 #ifndef FILESYSTEM_H
 #define FILESYSTEM_H
 
+#include <stdarg.h>
+#include <stddef.h>
+#include "xash3d_types.h"
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif // __cplusplus
+
+#include "fsinfo.h"
+
 // filesystem flags
 #define FS_STATIC_PATH  ( 1U << 0 )  // FS_ClearSearchPath will be ignore this path
 #define FS_NOWRITE_PATH ( 1U << 1 )  // default behavior - last added gamedir set as writedir. This flag disables it
@@ -65,48 +76,54 @@ typedef struct fs_logfuncs_t
 #define FS_MEMFUNCS_INTERFACE_VERSION 1
 #define FS_LOGFUNCS_INTERFACE_VERSION 1
 
-qboolean FS_InitStdio( qboolean caseinsensitive, const char *rootdir, const char *basedir, const char *gamedir, const char *rodir, fs_memfuncs_t *memfuncs, fs_logfuncs_t *logfuncs );
-void FS_ShutdownStdio( void );
+extern fsinfo_t EXPORT_ FI;
+#define GI           FI.GameInfo
+#define FS_Gamedir() GI->gamefolder
+#define FS_Title()   GI->title
 
-void FS_Path( void );
-void FS_Rescan( void );
-void FS_ClearSearchPath( void );
-void FS_AllowDirectPaths( qboolean enable );
-void FS_AddGameDirectory( const char *dir, uint flags );
-void FS_AddGameHierarchy( const char *dir, uint flags );
-void FS_LoadGameInfo( const char *rootfolder );
-const char *FS_GetDiskPath( const char *name, qboolean gamedironly );
-byte *W_LoadLump( wfile_t *wad, const char *lumpname, size_t *lumpsizeptr, const char type );
-void W_Close( wfile_t *wad );
-byte *FS_LoadFile( const char *path, fs_offset_t *filesizeptr, qboolean gamedironly );
-qboolean CRC32_File( dword *crcvalue, const char *filename );
-qboolean MD5_HashFile( byte digest[16], const char *pszFileName, uint seed[4] );
-byte *FS_LoadDirectFile( const char *path, fs_offset_t *filesizeptr );
-qboolean FS_WriteFile( const char *filename, const void *data, fs_offset_t len );
-search_t *FS_Search( const char *pattern, int caseinsensitive, int gamedironly );
-file_t *FS_Open( const char *filepath, const char *mode, qboolean gamedironly );
-fs_offset_t FS_Write( file_t *file, const void *data, size_t datasize );
-fs_offset_t FS_Read( file_t *file, void *buffer, size_t buffersize );
-int FS_VPrintf( file_t *file, const char *format, va_list ap );
-int FS_Seek( file_t *file, fs_offset_t offset, int whence );
-int FS_Gets( file_t *file, byte *string, size_t bufsize );
-int FS_Printf( file_t *file, const char *format, ... ) _format( 2 );
-fs_offset_t FS_FileSize( const char *filename, qboolean gamedironly );
-int FS_FileTime( const char *filename, qboolean gamedironly );
-int FS_Print( file_t *file, const char *msg );
-qboolean FS_Rename( const char *oldname, const char *newname );
-int FS_FileExists( const char *filename, int gamedironly );
-int FS_SetCurrentDirectory( const char *path );
-qboolean FS_SysFileExists( const char *path, qboolean casesensitive );
-qboolean FS_FileCopy( file_t *pOutput, file_t *pInput, int fileSize );
-qboolean FS_Delete( const char *path );
-int FS_UnGetc( file_t *file, byte c );
-fs_offset_t FS_Tell( file_t *file );
-qboolean FS_Eof( file_t *file );
-int FS_Close( file_t *file );
-int FS_Getc( file_t *file );
-fs_offset_t FS_FileLength( file_t *f );
-qboolean FS_FindLibrary( const char *dllname, qboolean directpath, char *dllpath, size_t dllpathlen, qboolean *encrypted, qboolean *custom_loader, char *fullPath, size_t fullpathlen );
-void FS_Path_f( void );
+qboolean EXPORT FS_InitStdio( qboolean caseinsensitive, const char *rootdir, const char *basedir, const char *gamedir, const char *rodir, fs_memfuncs_t *memfuncs, fs_logfuncs_t *logfuncs );
+void EXPORT FS_ShutdownStdio( void );
+void EXPORT FS_Path( void );
+void EXPORT FS_Rescan( void );
+void EXPORT FS_ClearSearchPath( void );
+void EXPORT FS_AllowDirectPaths( qboolean enable );
+void EXPORT FS_AddGameDirectory( const char *dir, uint flags );
+void EXPORT FS_AddGameHierarchy( const char *dir, uint flags );
+void EXPORT FS_LoadGameInfo( const char *rootfolder );
+const char EXPORT *FS_GetDiskPath( const char *name, qboolean gamedironly );
+byte EXPORT *FS_LoadFile( const char *path, fs_offset_t *filesizeptr, qboolean gamedironly );
+qboolean EXPORT CRC32_File( dword *crcvalue, const char *filename );
+qboolean EXPORT MD5_HashFile( byte digest[16], const char *pszFileName, uint seed[4] );
+byte EXPORT *FS_LoadDirectFile( const char *path, fs_offset_t *filesizeptr );
+qboolean EXPORT FS_WriteFile( const char *filename, const void *data, fs_offset_t len );
+search_t EXPORT *FS_Search( const char *pattern, int caseinsensitive, int gamedironly );
+file_t EXPORT *FS_Open( const char *filepath, const char *mode, qboolean gamedironly );
+fs_offset_t EXPORT FS_Write( file_t *file, const void *data, size_t datasize );
+fs_offset_t EXPORT FS_Read( file_t *file, void *buffer, size_t buffersize );
+int EXPORT FS_VPrintf( file_t *file, const char *format, va_list ap );
+int EXPORT FS_Seek( file_t *file, fs_offset_t offset, int whence );
+int EXPORT FS_Gets( file_t *file, byte *string, size_t bufsize );
+int EXPORT FS_Printf( file_t *file, const char *format, ... ) _format( 2 );
+fs_offset_t EXPORT FS_FileSize( const char *filename, qboolean gamedironly );
+int EXPORT FS_FileTime( const char *filename, qboolean gamedironly );
+int EXPORT FS_Print( file_t *file, const char *msg );
+qboolean EXPORT FS_Rename( const char *oldname, const char *newname );
+int EXPORT FS_FileExists( const char *filename, int gamedironly );
+int EXPORT FS_SetCurrentDirectory( const char *path );
+qboolean EXPORT FS_SysFileExists( const char *path, qboolean casesensitive );
+qboolean EXPORT FS_FileCopy( file_t *pOutput, file_t *pInput, int fileSize );
+qboolean EXPORT FS_Delete( const char *path );
+int EXPORT FS_UnGetc( file_t *file, byte c );
+fs_offset_t EXPORT FS_Tell( file_t *file );
+qboolean EXPORT FS_Eof( file_t *file );
+int EXPORT FS_Close( file_t *file );
+int EXPORT FS_Getc( file_t *file );
+fs_offset_t EXPORT FS_FileLength( file_t *f );
+qboolean EXPORT FS_FindLibrary( const char *dllname, qboolean directpath, char *dllpath, size_t dllpathlen, qboolean *encrypted, qboolean *custom_loader, char *fullPath, size_t fullpathlen );
+void EXPORT FS_Path_f( void );
+
+#ifdef __cplusplus
+}
+#endif // __cplusplus
 
 #endif//FILESYSTEM_H

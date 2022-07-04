@@ -16,144 +16,104 @@ GNU General Public License for more details.
 #ifndef FILESYSTEM_INTERNAL_H
 #define FILESYSTEM_INTERNAL_H
 
-/*
-========================================================================
-PAK FILES
+#include "xash3d_types.h"
+#include "filesystem.h"
 
-The .pak files are just a linear collapse of a directory tree
-========================================================================
-*/
-// header
-#define IDPACKV1HEADER	(('K'<<24)+('C'<<16)+('A'<<8)+'P')	// little-endian "PACK"
+typedef struct zip_s zip_t;
+typedef struct pack_s pack_t;
+typedef struct wfile_s wfile_t;
 
-#define MAX_FILES_IN_PACK	65536 // pak
-
-typedef struct
+enum
 {
-	int		ident;
-	int		dirofs;
-	int		dirlen;
-} dpackheader_t;
+	SEARCHPATH_PLAIN = 0,
+	SEARCHPATH_PAK,
+	SEARCHPATH_WAD,
+	SEARCHPATH_ZIP
+};
 
-typedef struct
+typedef struct stringlist_s
 {
-	char		name[56];		// total 64 bytes
-	int		filepos;
-	int		filelen;
-} dpackfile_t;
+	// maxstrings changes as needed, causing reallocation of strings[] array
+	int		maxstrings;
+	int		numstrings;
+	char		**strings;
+} stringlist_t;
 
-/*
-========================================================================
-.WAD archive format	(WhereAllData - WAD)
-
-List of compressed files, that can be identify only by TYPE_*
-
-<format>
-header:	dwadinfo_t[dwadinfo_t]
-file_1:	byte[dwadinfo_t[num]->disksize]
-file_2:	byte[dwadinfo_t[num]->disksize]
-file_3:	byte[dwadinfo_t[num]->disksize]
-...
-file_n:	byte[dwadinfo_t[num]->disksize]
-infotable	dlumpinfo_t[dwadinfo_t->numlumps]
-========================================================================
-*/
-#define WAD3_NAMELEN	16
-#define HINT_NAMELEN	5	// e.g. _mask, _norm
-#define MAX_FILES_IN_WAD	65535	// real limit as above <2Gb size not a lumpcount
-
-#include "const.h"
-
-typedef struct
+typedef struct searchpath_s
 {
-	int		ident;		// should be WAD3
-	int		numlumps;		// num files
-	int		infotableofs;	// LUT offset
-} dwadinfo_t;
+	string  filename;
+	int     type;
+	int     flags;
+	union
+	{
+		pack_t  *pack;
+		wfile_t *wad;
+		zip_t   *zip;
+	};
+	struct searchpath_s *next;
+} searchpath_t;
 
-typedef struct
-{
-	int		filepos;		// file offset in WAD
-	int		disksize;		// compressed or uncompressed
-	int		size;		// uncompressed
-	signed char	type;		// TYP_*
-	signed char	attribs;		// file attribs
-	signed char	pad0;
-	signed char	pad1;
-	char		name[WAD3_NAMELEN];	// must be null terminated
-} dlumpinfo_t;
+extern searchpath_t *fs_searchpaths;
+extern poolhandle_t  fs_mempool;
+extern fs_memfuncs_t g_memfuncs;
+extern fs_logfuncs_t g_logfuncs;
+extern qboolean      fs_ext_path;
+extern char          fs_rodir[MAX_SYSPATH];
 
-#define ZIP_HEADER_LF (('K'<<8)+('P')+(0x03<<16)+(0x04<<24))
-#define ZIP_HEADER_SPANNED ((0x08<<24)+(0x07<<16)+('K'<<8)+'P')
+#define Mem_Malloc( pool, size ) g_memfuncs._Mem_Alloc( pool, size, false, __FILE__, __LINE__ )
+#define Mem_Calloc( pool, size ) g_memfuncs._Mem_Alloc( pool, size, true, __FILE__, __LINE__ )
+#define Mem_Realloc( pool, ptr, size ) g_memfuncs._Mem_Realloc( pool, ptr, size, true, __FILE__, __LINE__ )
+#define Mem_Free( mem ) g_memfuncs._Mem_Free( mem, __FILE__, __LINE__ )
+#define Mem_AllocPool( name ) g_memfuncs._Mem_AllocPool( name, __FILE__, __LINE__ )
+#define Mem_FreePool( pool ) g_memfuncs._Mem_FreePool( pool, __FILE__, __LINE__ )
 
-#define ZIP_HEADER_CDF ((0x02<<24)+(0x01<<16)+('K'<<8)+'P')
-#define ZIP_HEADER_EOCD ((0x06<<24)+(0x05<<16)+('K'<<8)+'P')
+#define Con_Printf  (*g_logfuncs._Con_Printf)
+#define Con_DPrintf (*g_logfuncs._Con_DPrintf)
+#define Con_Reportf (*g_logfuncs._Con_Reportf)
+#define Sys_Error   (*g_logfuncs._Sys_Error)
 
-#define ZIP_COMPRESSION_NO_COMPRESSION	    0
-#define ZIP_COMPRESSION_DEFLATED	    8
+//
+// filesystem.c
+//
+void stringlistappend( stringlist_t *list, char *text );
+int           FS_SysFileTime( const char *filename );
+file_t       *FS_OpenHandle( const char *syspath, int handle, fs_offset_t offset, fs_offset_t len );
+file_t       *FS_SysOpen( const char *filepath, const char *mode );
+const char   *FS_FixFileCase( const char *path );
+searchpath_t *FS_FindFile( const char *name, int *index, qboolean gamedironly );
 
-#define ZIP_ZIP64 0xffffffff
+//
+// pak.c
+//
+int      FS_FileTimePAK( pack_t *pack );
+int      FS_FindFilePAK( pack_t *pack, const char *name );
+void     FS_PrintPAKInfo( char *dst, size_t size, pack_t *pack );
+void     FS_ClosePAK( pack_t *pack );
+void     FS_SearchPAK( stringlist_t *list, pack_t *pack, const char *pattern );
+file_t  *FS_OpenPackedFile( pack_t *pack, int pack_ind );
+qboolean FS_AddPak_Fullpath( const char *pakfile, qboolean *already_loaded, int flags );
 
-#pragma pack( push, 1 )
-typedef struct zip_header_s
-{
-	unsigned int	signature; // little endian ZIP_HEADER
-	unsigned short	version; // version of pkzip need to unpack
-	unsigned short	flags; // flags (16 bits == 16 flags)
-	unsigned short	compression_flags; // compression flags (bits)
-	unsigned int	dos_date; // file modification time and file modification date
-	unsigned int	crc32; //crc32
-	unsigned int	compressed_size;
-	unsigned int	uncompressed_size;
-	unsigned short	filename_len;
-	unsigned short	extrafield_len;
-} zip_header_t;
+//
+// wad.c
+//
+int      FS_FileTimeWAD( wfile_t *wad );
+int      FS_FindFileWAD( wfile_t *wad, const char *name );
+void     FS_PrintWADInfo( char *dst, size_t size, wfile_t *wad );
+void     FS_CloseWAD( wfile_t *wad );
+void     FS_SearchWAD( stringlist_t *list, wfile_t *wad, const char *pattern );
+byte    *FS_LoadWADFile( const char *path, fs_offset_t *sizeptr, qboolean gamedironly );
+qboolean FS_AddWad_Fullpath( const char *wadfile, qboolean *already_loaded, int flags );
 
-/*
-  in zip64 comp and uncompr size == 0xffffffff remeber this
-  compressed and uncompress filesize stored in extra field
-*/
-
-typedef struct zip_header_extra_s
-{
-	unsigned int	signature; // ZIP_HEADER_SPANNED
-	unsigned int	crc32;
-	unsigned int	compressed_size;
-	unsigned int	uncompressed_size;
-} zip_header_extra_t;
-
-typedef struct zip_cdf_header_s
-{
-	unsigned int	signature;
-	unsigned short	version;
-	unsigned short	version_need;
-	unsigned short	generalPurposeBitFlag;
-	unsigned short	flags;
-	unsigned short	modification_time;
-	unsigned short	modification_date;
-	unsigned int	crc32;
-	unsigned int	compressed_size;
-	unsigned int	uncompressed_size;
-	unsigned short	filename_len;
-	unsigned short	extrafield_len;
-	unsigned short	file_commentary_len;
-	unsigned short	disk_start;
-	unsigned short	internal_attr;
-	unsigned int	external_attr;
-	unsigned int	local_header_offset;
-} zip_cdf_header_t;
-
-typedef struct zip_header_eocd_s
-{
-	unsigned short	disk_number;
-	unsigned short	start_disk_number;
-	unsigned short	number_central_directory_record;
-	unsigned short	total_central_directory_record;
-	unsigned int	size_of_central_directory;
-	unsigned int	central_directory_offset;
-	unsigned short	commentary_len;
-} zip_header_eocd_t;
-#pragma pack( pop )
-
+//
+// zip.c
+//
+int      FS_FileTimeZIP( zip_t *zip );
+int      FS_FindFileZIP( zip_t *zip, const char *name );
+void     FS_PrintZIPInfo( char *dst, size_t size, zip_t *zip );
+void     FS_CloseZIP( zip_t *zip );
+void     FS_SearchZIP( stringlist_t *list, zip_t *zip, const char *pattern );
+byte    *FS_LoadZIPFile( const char *path, fs_offset_t *sizeptr, qboolean gamedironly );
+file_t  *FS_OpenZipFile( zip_t *zip, int pack_ind );
+qboolean FS_AddZip_Fullpath( const char *zipfile, qboolean *already_loaded, int flags );
 
 #endif // FILESYSTEM_INTERNAL_H

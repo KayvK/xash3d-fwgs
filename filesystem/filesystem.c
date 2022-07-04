@@ -30,10 +30,9 @@ GNU General Public License for more details.
 #include <stdio.h>
 #include <stdarg.h>
 #include "port.h"
+#include "const.h"
 #include "crtlib.h"
 #include "crclib.h"
-#include "miniz.h" // header-only zlib replacement
-#include "wadfile.h"
 #include "filesystem.h"
 #include "filesystem_internal.h"
 #include "fsinfo.h"
@@ -43,46 +42,6 @@ GNU General Public License for more details.
 
 #define FILE_COPY_SIZE		(1024 * 1024)
 #define FILE_BUFF_SIZE		(2048)
-
-// PAK errors
-#define PAK_LOAD_OK			0
-#define PAK_LOAD_COULDNT_OPEN		1
-#define PAK_LOAD_BAD_HEADER		2
-#define PAK_LOAD_BAD_FOLDERS		3
-#define PAK_LOAD_TOO_MANY_FILES	4
-#define PAK_LOAD_NO_FILES		5
-#define PAK_LOAD_CORRUPTED		6
-
-// WAD errors
-#define WAD_LOAD_OK			0
-#define WAD_LOAD_COULDNT_OPEN		1
-#define WAD_LOAD_BAD_HEADER		2
-#define WAD_LOAD_BAD_FOLDERS		3
-#define WAD_LOAD_TOO_MANY_FILES	4
-#define WAD_LOAD_NO_FILES		5
-#define WAD_LOAD_CORRUPTED		6
-
-// ZIP errors
-#define ZIP_LOAD_OK			0
-#define ZIP_LOAD_COULDNT_OPEN		1
-#define ZIP_LOAD_BAD_HEADER		2
-#define ZIP_LOAD_BAD_FOLDERS		3
-#define ZIP_LOAD_NO_FILES		5
-#define ZIP_LOAD_CORRUPTED		6
-
-typedef struct stringlist_s
-{
-	// maxstrings changes as needed, causing reallocation of strings[] array
-	int		maxstrings;
-	int		numstrings;
-	char		**strings;
-} stringlist_t;
-
-typedef struct wadtype_s
-{
-	const char		*ext;
-	signed char		type;
-} wadtype_t;
 
 struct file_s
 {
@@ -102,89 +61,29 @@ struct file_s
 #endif
 };
 
-struct wfile_s
-{
-	string		filename;
-	int		infotableofs;
-	int		numlumps;
-	poolhandle_t mempool;			// W_ReadLump temp buffers
-	file_t		*handle;
-	dlumpinfo_t	*lumps;
-	time_t		filetime;
-};
+qboolean      fs_ext_path = false;	// attempt to read\write from ./ or ../ pathes
+poolhandle_t  fs_mempool;
+searchpath_t *fs_searchpaths = NULL;	// chain
+char          fs_rodir[MAX_SYSPATH];
 
-typedef struct pack_s
-{
-	string		filename;
-	int		handle;
-	int		numfiles;
-	time_t		filetime;			// common for all packed files
-	dpackfile_t	*files;
-} pack_t;
-
-typedef struct zipfile_s
-{
-	char		name[MAX_SYSPATH];
-	fs_offset_t	offset; // offset of local file header
-	fs_offset_t	size; //original file size
-	fs_offset_t	compressed_size; // compressed file size
-	unsigned short flags;
-} zipfile_t;
-
-typedef struct zip_s
-{
-	string		filename;
-	int		handle;
-	int		numfiles;
-	time_t		filetime;
-	zipfile_t	*files;
-} zip_t;
-
-typedef struct searchpath_s
-{
-	string		filename;
-	pack_t		*pack;
-	wfile_t		*wad;
-	zip_t		*zip;
-	int		flags;
-	struct searchpath_s *next;
-} searchpath_t;
-
-static poolhandle_t     fs_mempool;
-static searchpath_t		*fs_searchpaths = NULL;	// chain
 static searchpath_t		fs_directpath;		// static direct path
 static char			fs_basedir[MAX_SYSPATH];	// base game directory
 static char			fs_gamedir[MAX_SYSPATH];	// game current directory
 static char			fs_writedir[MAX_SYSPATH];	// path that game allows to overwrite, delete and rename files (and create new of course)
-static char			fs_rodir[MAX_SYSPATH];
-static char			fs_rootdir[MAX_SYSPATH];
 
-static qboolean		fs_ext_path = false;	// attempt to read\write from ./ or ../ pathes
+static char			fs_rootdir[MAX_SYSPATH];
 #if !XASH_WIN32
 static qboolean		fs_caseinsensitive = true; // try to search missing files
 #endif
 
-static fs_memfuncs_t g_memfuncs;
-static fs_logfuncs_t g_logfuncs;
+fs_memfuncs_t g_memfuncs;
+fs_logfuncs_t g_logfuncs;
 
 fsinfo_t FI;
-
-#define Mem_Malloc( pool, size ) g_memfuncs._Mem_Alloc( pool, size, false, __FILE__, __LINE__ )
-#define Mem_Calloc( pool, size ) g_memfuncs._Mem_Alloc( pool, size, true, __FILE__, __LINE__ )
-#define Mem_Realloc( pool, ptr, size ) g_memfuncs._Mem_Realloc( pool, ptr, size, true, __FILE__, __LINE__ )
-#define Mem_Free( mem ) g_memfuncs._Mem_Free( mem, __FILE__, __LINE__ )
-#define Mem_AllocPool( name ) g_memfuncs._Mem_AllocPool( name, __FILE__, __LINE__ )
-#define Mem_FreePool( pool ) g_memfuncs._Mem_FreePool( pool, __FILE__, __LINE__ )
-
-#define Con_Printf  (*g_logfuncs._Con_Printf)
-#define Con_DPrintf (*g_logfuncs._Con_DPrintf)
-#define Con_Reportf (*g_logfuncs._Con_Reportf)
-#define Sys_Error   (*g_logfuncs._Sys_Error)
 
 #ifdef XASH_REDUCE_FD
 static file_t *fs_last_readfile;
 static zip_t *fs_last_zip;
-static pack_t *fs_last_pak;
 
 static void FS_EnsureOpenFile( file_t *file )
 {
@@ -208,21 +107,6 @@ static void FS_EnsureOpenFile( file_t *file )
 	}
 }
 
-static void FS_EnsureOpenZip( zip_t *zip )
-{
-	if( fs_last_zip == zip )
-		return;
-
-	if( fs_last_zip && (fs_last_zip->handle != -1) )
-	{
-		close( fs_last_zip->handle );
-		fs_last_zip->handle = -1;
-	}
-	fs_last_zip = zip;
-	if( zip && (zip->handle == -1) )
-		zip->handle = open( zip->filename, O_RDONLY|O_BINARY );
-}
-
 static void FS_BackupFileName( file_t *file, const char *path, uint options )
 {
 	if( path == NULL )
@@ -242,21 +126,12 @@ static void FS_BackupFileName( file_t *file, const char *path, uint options )
 
 #else
 static void FS_EnsureOpenFile( file_t *file ) {}
-static void FS_EnsureOpenZip( zip_t *zip ) {}
 static void FS_BackupFileName( file_t *file, const char *path, uint options ) {}
 #endif
 
 static void FS_InitMemory( void );
-static searchpath_t *FS_FindFile( const char *name, int *index, qboolean gamedironly );
-static dlumpinfo_t *W_FindLump( wfile_t *wad, const char *name, const signed char matchtype );
-static dpackfile_t *FS_AddFileToPack( const char* name, pack_t *pack, fs_offset_t offset, fs_offset_t size );
 void Zip_Close( zip_t *zip );
-static byte *W_LoadFile( const char *path, fs_offset_t *filesizeptr, qboolean gamedironly );
-static wfile_t *W_Open( const char *filename, int *errorcode );
 static qboolean FS_SysFolderExists( const char *path );
-static int FS_SysFileTime( const char *filename );
-static signed char W_TypeFromExt( const char *lumpname );
-static const char *W_ExtFromType( signed char lumptype );
 static void FS_Purge( file_t* file );
 
 /*
@@ -290,7 +165,7 @@ static void stringlistfreecontents( stringlist_t *list )
 	list->strings = NULL;
 }
 
-static void stringlistappend( stringlist_t *list, char *text )
+void stringlistappend( stringlist_t *list, char *text )
 {
 	size_t	textlen;
 
@@ -399,7 +274,7 @@ FS_FixFileCase
 emulate WIN32 FS behaviour when opening local file
 ==================
 */
-static const char *FS_FixFileCase( const char *path )
+const char *FS_FixFileCase( const char *path )
 {
 #if defined __DOS__ & !defined __WATCOM_LFN__
 	// not fix, but convert to 8.3 CAPS and rotate slashes
@@ -506,49 +381,6 @@ static const wchar_t *FS_PathToWideChar( const char *path )
 #endif
 
 /*
-====================
-FS_AddFileToPack
-
-Add a file to the list of files contained into a package
-====================
-*/
-static dpackfile_t *FS_AddFileToPack( const char *name, pack_t *pack, fs_offset_t offset, fs_offset_t size )
-{
-	int		left, right, middle;
-	dpackfile_t	*pfile;
-
-	// look for the slot we should put that file into (binary search)
-	left = 0;
-	right = pack->numfiles - 1;
-
-	while( left <= right )
-	{
-		int diff;
-
-		middle = (left + right) / 2;
-		diff = Q_stricmp( pack->files[middle].name, name );
-
-		// If we found the file, there's a problem
-		if( !diff ) Con_Reportf( S_WARN "package %s contains the file %s several times\n", pack->filename, name );
-
-		// If we're too far in the list
-		if( diff > 0 ) right = middle - 1;
-		else left = middle + 1;
-	}
-
-	// We have to move the right of the list by one slot to free the one we need
-	pfile = &pack->files[left];
-	memmove( pfile + 1, pfile, (pack->numfiles - left) * sizeof( *pfile ));
-	pack->numfiles++;
-
-	Q_strncpy( pfile->name, name, sizeof( pfile->name ));
-	pfile->filepos = offset;
-	pfile->filelen = size;
-
-	return pfile;
-}
-
-/*
 ============
 FS_CreatePath
 
@@ -572,661 +404,7 @@ void FS_CreatePath( char *path )
 	}
 }
 
-/*
-=================
-FS_LoadPackPAK
 
-Takes an explicit (not game tree related) path to a pak file.
-
-Loads the header and directory, adding the files at the beginning
-of the list so they override previous pack files.
-=================
-*/
-pack_t *FS_LoadPackPAK( const char *packfile, int *error )
-{
-	dpackheader_t header;
-	int         packhandle;
-	int         i, numpackfiles;
-	pack_t      *pack;
-	dpackfile_t *info;
-	fs_size_t     c;
-
-	packhandle = open( packfile, O_RDONLY|O_BINARY );
-
-#if !XASH_WIN32
-	if( packhandle < 0 )
-	{
-		const char *fpackfile = FS_FixFileCase( packfile );
-		if( fpackfile != packfile )
-			packhandle = open( fpackfile, O_RDONLY|O_BINARY );
-	}
-#endif
-
-	if( packhandle < 0 )
-	{
-		Con_Reportf( "%s couldn't open: %s\n", packfile, strerror( errno ));
-		if( error ) *error = PAK_LOAD_COULDNT_OPEN;
-		return NULL;
-	}
-
-	c = read( packhandle, (void *)&header, sizeof( header ));
-
-	if( c != sizeof( header ) || header.ident != IDPACKV1HEADER )
-	{
-		Con_Reportf( "%s is not a packfile. Ignored.\n", packfile );
-		if( error ) *error = PAK_LOAD_BAD_HEADER;
-		close( packhandle );
-		return NULL;
-	}
-
-	if( header.dirlen % sizeof( dpackfile_t ))
-	{
-		Con_Reportf( S_ERROR "%s has an invalid directory size. Ignored.\n", packfile );
-		if( error ) *error = PAK_LOAD_BAD_FOLDERS;
-		close( packhandle );
-		return NULL;
-	}
-
-	numpackfiles = header.dirlen / sizeof( dpackfile_t );
-
-	if( numpackfiles > MAX_FILES_IN_PACK )
-	{
-		Con_Reportf( S_ERROR "%s has too many files ( %i ). Ignored.\n", packfile, numpackfiles );
-		if( error ) *error = PAK_LOAD_TOO_MANY_FILES;
-		close( packhandle );
-		return NULL;
-	}
-
-	if( numpackfiles <= 0 )
-	{
-		Con_Reportf( "%s has no files. Ignored.\n", packfile );
-		if( error ) *error = PAK_LOAD_NO_FILES;
-		close( packhandle );
-		return NULL;
-	}
-
-	info = (dpackfile_t *)Mem_Malloc( fs_mempool, sizeof( *info ) * numpackfiles );
-	lseek( packhandle, header.dirofs, SEEK_SET );
-
-	if( header.dirlen != read( packhandle, (void *)info, header.dirlen ))
-	{
-		Con_Reportf( "%s is an incomplete PAK, not loading\n", packfile );
-		if( error ) *error = PAK_LOAD_CORRUPTED;
-		close( packhandle );
-		Mem_Free( info );
-		return NULL;
-	}
-
-	pack = (pack_t *)Mem_Calloc( fs_mempool, sizeof( pack_t ));
-	Q_strncpy( pack->filename, packfile, sizeof( pack->filename ));
-	pack->files = (dpackfile_t *)Mem_Calloc( fs_mempool, numpackfiles * sizeof( dpackfile_t ));
-	pack->filetime = FS_SysFileTime( packfile );
-	pack->handle = packhandle;
-	pack->numfiles = 0;
-
-	// parse the directory
-	for( i = 0; i < numpackfiles; i++ )
-		FS_AddFileToPack( info[i].name, pack, info[i].filepos, info[i].filelen );
-
-#ifdef XASH_REDUCE_FD
-	// will reopen when needed
-	close( pack->handle );
-	pack->handle = -1;
-#endif
-
-	if( error ) *error = PAK_LOAD_OK;
-	Mem_Free( info );
-
-	return pack;
-}
-
-/*
-============
-FS_SortZip
-============
-*/
-static int FS_SortZip( const void *a, const void *b )
-{
-	return Q_stricmp( ( ( zipfile_t* )a )->name, ( ( zipfile_t* )b )->name );
-}
-
-/*
-============
-FS_LoadZip
-============
-*/
-static zip_t *FS_LoadZip( const char *zipfile, int *error )
-{
-	int		  numpackfiles = 0, i;
-	zip_cdf_header_t  header_cdf;
-	zip_header_eocd_t header_eocd;
-	uint32_t          signature;
-	fs_offset_t	  filepos = 0, length;
-	zipfile_t	  *info = NULL;
-	char		  filename_buffer[MAX_SYSPATH];
-	zip_t         *zip = (zip_t *)Mem_Calloc( fs_mempool, sizeof( *zip ));
-	fs_size_t       c;
-
-	zip->handle = open( zipfile, O_RDONLY|O_BINARY );
-
-#if !XASH_WIN32
-	if( zip->handle < 0 )
-	{
-		const char *fzipfile = FS_FixFileCase( zipfile );
-		if( fzipfile != zipfile )
-			zip->handle = open( fzipfile, O_RDONLY|O_BINARY );
-	}
-#endif
-
-	if( zip->handle < 0 )
-	{
-		Con_Reportf( S_ERROR "%s couldn't open\n", zipfile );
-
-		if( error )
-			*error = ZIP_LOAD_COULDNT_OPEN;
-
-		Zip_Close( zip );
-		return NULL;
-	}
-
-	length = lseek( zip->handle, 0, SEEK_END );
-
-	if( length > UINT_MAX )
-	{
-		Con_Reportf( S_ERROR "%s bigger than 4GB.\n", zipfile );
-
-		if( error )
-			*error = ZIP_LOAD_COULDNT_OPEN;
-
-		Zip_Close( zip );
-		return NULL;
-	}
-
-	lseek( zip->handle, 0, SEEK_SET );
-
-	c = read( zip->handle, &signature, sizeof( signature ) );
-
-	if( c != sizeof( signature ) || signature == ZIP_HEADER_EOCD )
-	{
-		Con_Reportf( S_WARN "%s has no files. Ignored.\n", zipfile );
-
-		if( error )
-			*error = ZIP_LOAD_NO_FILES;
-
-		Zip_Close( zip );
-		return NULL;
-	}
-
-	if( signature != ZIP_HEADER_LF )
-	{
-		Con_Reportf( S_ERROR "%s is not a zip file. Ignored.\n", zipfile );
-
-		if( error )
-			*error = ZIP_LOAD_BAD_HEADER;
-
-		Zip_Close( zip );
-		return NULL;
-	}
-
-	// Find oecd
-	lseek( zip->handle, 0, SEEK_SET );
-	filepos = length;
-
-	while ( filepos > 0 )
-	{
-		lseek( zip->handle, filepos, SEEK_SET );
-		c = read( zip->handle, &signature, sizeof( signature ) );
-
-		if( c == sizeof( signature ) && signature == ZIP_HEADER_EOCD )
-			break;
-
-		filepos -= sizeof( char ); // step back one byte
-	}
-
-	if( ZIP_HEADER_EOCD != signature )
-	{
-		Con_Reportf( S_ERROR "cannot find EOCD in %s. Zip file corrupted.\n", zipfile );
-
-		if( error )
-			*error = ZIP_LOAD_BAD_HEADER;
-
-		Zip_Close( zip );
-		return NULL;
-	}
-
-	c = read( zip->handle, &header_eocd, sizeof( header_eocd ) );
-
-	if( c != sizeof( header_eocd ))
-	{
-		Con_Reportf( S_ERROR "invalid EOCD header in %s. Zip file corrupted.\n", zipfile );
-
-		if( error )
-			*error = ZIP_LOAD_BAD_HEADER;
-
-		Zip_Close( zip );
-		return NULL;
-	}
-
-	// Move to CDF start
-	lseek( zip->handle, header_eocd.central_directory_offset, SEEK_SET );
-
-	// Calc count of files in archive
-	info = (zipfile_t *)Mem_Calloc( fs_mempool, sizeof( *info ) * header_eocd.total_central_directory_record );
-
-	for( i = 0; i < header_eocd.total_central_directory_record; i++ )
-	{
-		c = read( zip->handle, &header_cdf, sizeof( header_cdf ) );
-
-		if( c != sizeof( header_cdf ) || header_cdf.signature != ZIP_HEADER_CDF )
-		{
-			Con_Reportf( S_ERROR "CDF signature mismatch in %s. Zip file corrupted.\n", zipfile );
-
-			if( error )
-				*error = ZIP_LOAD_BAD_HEADER;
-
-			Mem_Free( info );
-			Zip_Close( zip );
-			return NULL;
-		}
-
-		if( header_cdf.uncompressed_size && header_cdf.filename_len && ( header_cdf.filename_len < MAX_SYSPATH ) )
-		{
-			memset( &filename_buffer, '\0', MAX_SYSPATH );
-			c = read( zip->handle, &filename_buffer, header_cdf.filename_len );
-
-			if( c != header_cdf.filename_len )
-			{
-				Con_Reportf( S_ERROR "filename length mismatch in %s. Zip file corrupted.\n", zipfile );
-
-				if( error )
-					*error = ZIP_LOAD_CORRUPTED;
-
-				Mem_Free( info );
-				Zip_Close( zip );
-				return NULL;
-			}
-
-			Q_strncpy( info[numpackfiles].name, filename_buffer, MAX_SYSPATH );
-
-			info[numpackfiles].size = header_cdf.uncompressed_size;
-			info[numpackfiles].compressed_size = header_cdf.compressed_size;
-			info[numpackfiles].offset = header_cdf.local_header_offset;
-			numpackfiles++;
-		}
-		else
-			lseek( zip->handle, header_cdf.filename_len, SEEK_CUR );
-
-		if( header_cdf.extrafield_len )
-			lseek( zip->handle, header_cdf.extrafield_len, SEEK_CUR );
-
-		if( header_cdf.file_commentary_len )
-			lseek( zip->handle, header_cdf.file_commentary_len, SEEK_CUR );
-	}
-
-	// recalculate offsets
-	for( i = 0; i < numpackfiles; i++ )
-	{
-		zip_header_t header;
-
-		lseek( zip->handle, info[i].offset, SEEK_SET );
-		c = read( zip->handle, &header, sizeof( header ) );
-
-		if( c != sizeof( header ))
-		{
-			Con_Reportf( S_ERROR "header length mismatch in %s. Zip file corrupted.\n", zipfile );
-
-			if( error )
-				*error = ZIP_LOAD_CORRUPTED;
-
-			Mem_Free( info );
-			Zip_Close( zip );
-			return NULL;
-		}
-
-		info[i].flags = header.compression_flags;
-		info[i].offset = info[i].offset + header.filename_len + header.extrafield_len + sizeof( header );
-	}
-
-	Q_strncpy( zip->filename, zipfile, sizeof( zip->filename ) );
-	zip->filetime = FS_SysFileTime( zipfile );
-	zip->numfiles = numpackfiles;
-	zip->files = info;
-
-	qsort( zip->files, zip->numfiles, sizeof( *zip->files ), FS_SortZip );
-
-#ifdef XASH_REDUCE_FD
-	// will reopen when needed
-	close(zip->handle);
-	zip->handle = -1;
-#endif
-
-	if( error )
-		*error = ZIP_LOAD_OK;
-
-	return zip;
-}
-
-void Zip_Close( zip_t *zip )
-{
-	if( !zip )
-		return;
-
-	if( zip->files )
-		Mem_Free( zip->files );
-
-	FS_EnsureOpenZip( NULL );
-
-	if( zip->handle >= 0 )
-		close( zip->handle );
-
-	Mem_Free( zip );
-}
-
-static byte *Zip_LoadFile( const char *path, fs_offset_t *sizeptr, qboolean gamedironly )
-{
-	searchpath_t	*search;
-	int		index;
-	zipfile_t	*file = NULL;
-	byte		*compressed_buffer = NULL, *decompressed_buffer = NULL;
-	int		zlib_result = 0;
-	dword		test_crc, final_crc;
-	z_stream	decompress_stream;
-	size_t      c;
-
-	if( sizeptr ) *sizeptr = 0;
-
-	search = FS_FindFile( path, &index, gamedironly );
-
-	if( !search || !search->zip )
-		return  NULL;
-
-	file = &search->zip->files[index];
-
-	FS_EnsureOpenZip( search->zip );
-
-	if( lseek( search->zip->handle, file->offset, SEEK_SET ) == -1 )
-		return NULL;
-
-	/*if( read( search->zip->handle, &header, sizeof( header ) ) < 0 )
-		return NULL;
-
-	if( header.signature != ZIP_HEADER_LF )
-	{
-		Con_Reportf( S_ERROR "Zip_LoadFile: %s signature error\n", file->name );
-		return NULL;
-	}*/
-
-	if( file->flags == ZIP_COMPRESSION_NO_COMPRESSION )
-	{
-		decompressed_buffer = Mem_Malloc( fs_mempool, file->size + 1 );
-		decompressed_buffer[file->size] = '\0';
-
-		c = read( search->zip->handle, decompressed_buffer, file->size );
-		if( c != file->size )
-		{
-			Con_Reportf( S_ERROR "Zip_LoadFile: %s size doesn't match\n", file->name );
-			return NULL;
-		}
-
-#if 0
-		CRC32_Init( &test_crc );
-		CRC32_ProcessBuffer( &test_crc, decompressed_buffer, file->size );
-
-		final_crc = CRC32_Final( test_crc );
-
-		if( final_crc != file->crc32 )
-		{
-			Con_Reportf( S_ERROR "Zip_LoadFile: %s file crc32 mismatch\n", file->name );
-			Mem_Free( decompressed_buffer );
-			return NULL;
-		}
-#endif
-		if( sizeptr ) *sizeptr = file->size;
-
-		FS_EnsureOpenZip( NULL );
-		return decompressed_buffer;
-	}
-	else if( file->flags == ZIP_COMPRESSION_DEFLATED )
-	{
-		compressed_buffer = Mem_Malloc( fs_mempool, file->compressed_size + 1 );
-		decompressed_buffer = Mem_Malloc( fs_mempool, file->size + 1 );
-		decompressed_buffer[file->size] = '\0';
-
-		c = read( search->zip->handle, compressed_buffer, file->compressed_size );
-		if( c != file->compressed_size )
-		{
-			Con_Reportf( S_ERROR "Zip_LoadFile: %s compressed size doesn't match\n", file->name );
-			return NULL;
-		}
-
-		memset( &decompress_stream, 0, sizeof( decompress_stream ) );
-
-		decompress_stream.total_in = decompress_stream.avail_in = file->compressed_size;
-		decompress_stream.next_in = (Bytef *)compressed_buffer;
-		decompress_stream.total_out = decompress_stream.avail_out = file->size;
-		decompress_stream.next_out = (Bytef *)decompressed_buffer;
-
-		decompress_stream.zalloc = Z_NULL;
-		decompress_stream.zfree = Z_NULL;
-		decompress_stream.opaque = Z_NULL;
-
-		if( inflateInit2( &decompress_stream, -MAX_WBITS ) != Z_OK )
-		{
-			Con_Printf( S_ERROR "Zip_LoadFile: inflateInit2 failed\n" );
-			Mem_Free( compressed_buffer );
-			Mem_Free( decompressed_buffer );
-			return NULL;
-		}
-
-		zlib_result = inflate( &decompress_stream, Z_NO_FLUSH );
-		inflateEnd( &decompress_stream );
-
-		if( zlib_result == Z_OK || zlib_result == Z_STREAM_END )
-		{
-			Mem_Free( compressed_buffer ); // finaly free compressed buffer
-#if 0
-			CRC32_Init( &test_crc );
-			CRC32_ProcessBuffer( &test_crc, decompressed_buffer, file->size );
-
-			final_crc = CRC32_Final( test_crc );
-
-			if( final_crc != file->crc32 )
-			{
-				Con_Reportf( S_ERROR "Zip_LoadFile: %s file crc32 mismatch\n", file->name );
-				Mem_Free( decompressed_buffer );
-				return NULL;
-			}
-#endif
-			if( sizeptr ) *sizeptr = file->size;
-
-			FS_EnsureOpenZip( NULL );
-			return decompressed_buffer;
-		}
-		else
-		{
-			Con_Reportf( S_ERROR "Zip_LoadFile: %s : error while file decompressing. Zlib return code %d.\n", file->name, zlib_result );
-			Mem_Free( compressed_buffer );
-			Mem_Free( decompressed_buffer );
-			return NULL;
-		}
-
-	}
-	else
-	{
-		Con_Reportf( S_ERROR "Zip_LoadFile: %s : file compressed with unknown algorithm.\n", file->name );
-		return NULL;
-	}
-
-	FS_EnsureOpenZip( NULL );
-	return NULL;
-}
-
-/*
-====================
-FS_AddWad_Fullpath
-====================
-*/
-static qboolean FS_AddWad_Fullpath( const char *wadfile, qboolean *already_loaded, int flags )
-{
-	searchpath_t	*search;
-	wfile_t		*wad = NULL;
-	const char	*ext = COM_FileExtension( wadfile );
-	int		errorcode = WAD_LOAD_COULDNT_OPEN;
-
-	for( search = fs_searchpaths; search; search = search->next )
-	{
-		if( search->wad && !Q_stricmp( search->wad->filename, wadfile ))
-		{
-			if( already_loaded ) *already_loaded = true;
-			return true; // already loaded
-		}
-	}
-
-	if( already_loaded )
-		*already_loaded = false;
-
-	if( !Q_stricmp( ext, "wad" ))
-		wad = W_Open( wadfile, &errorcode );
-
-	if( wad )
-	{
-		search = (searchpath_t *)Mem_Calloc( fs_mempool, sizeof( searchpath_t ));
-		search->wad = wad;
-		search->next = fs_searchpaths;
-		search->flags |= flags;
-		fs_searchpaths = search;
-
-		Con_Reportf( "Adding wadfile: %s (%i files)\n", wadfile, wad->numlumps );
-		return true;
-	}
-	else
-	{
-		if( errorcode != WAD_LOAD_NO_FILES )
-			Con_Reportf( S_ERROR "FS_AddWad_Fullpath: unable to load wad \"%s\"\n", wadfile );
-		return false;
-	}
-}
-
-/*
-================
-FS_AddPak_Fullpath
-
-Adds the given pack to the search path.
-The pack type is autodetected by the file extension.
-
-Returns true if the file was successfully added to the
-search path or if it was already included.
-
-If keep_plain_dirs is set, the pack will be added AFTER the first sequence of
-plain directories.
-================
-*/
-static qboolean FS_AddPak_Fullpath( const char *pakfile, qboolean *already_loaded, int flags )
-{
-	searchpath_t	*search;
-	pack_t		*pak = NULL;
-	const char	*ext = COM_FileExtension( pakfile );
-	int		i, errorcode = PAK_LOAD_COULDNT_OPEN;
-
-	for( search = fs_searchpaths; search; search = search->next )
-	{
-		if( search->pack && !Q_stricmp( search->pack->filename, pakfile ))
-		{
-			if( already_loaded ) *already_loaded = true;
-			return true; // already loaded
-		}
-	}
-
-	if( already_loaded )
-		*already_loaded = false;
-
-	if( !Q_stricmp( ext, "pak" ))
-		pak = FS_LoadPackPAK( pakfile, &errorcode );
-
-	if( pak )
-	{
-		string	fullpath;
-
-		search = (searchpath_t *)Mem_Calloc( fs_mempool, sizeof( searchpath_t ));
-		search->pack = pak;
-		search->next = fs_searchpaths;
-		search->flags |= flags;
-		fs_searchpaths = search;
-
-		Con_Reportf( "Adding pakfile: %s (%i files)\n", pakfile, pak->numfiles );
-
-		// time to add in search list all the wads that contains in current pakfile (if do)
-		for( i = 0; i < pak->numfiles; i++ )
-		{
-			if( !Q_stricmp( COM_FileExtension( pak->files[i].name ), "wad" ))
-			{
-				Q_snprintf( fullpath, MAX_STRING, "%s/%s", pakfile, pak->files[i].name );
-				FS_AddWad_Fullpath( fullpath, NULL, flags );
-			}
-		}
-
-		return true;
-	}
-	else
-	{
-		if( errorcode != PAK_LOAD_NO_FILES )
-			Con_Reportf( S_ERROR "FS_AddPak_Fullpath: unable to load pak \"%s\"\n", pakfile );
-		return false;
-	}
-}
-
-static qboolean FS_AddZip_Fullpath( const char *zipfile, qboolean *already_loaded, int flags )
-{
-	searchpath_t	*search;
-	zip_t		*zip = NULL;
-	const char	*ext = COM_FileExtension( zipfile );
-	int		errorcode = ZIP_LOAD_COULDNT_OPEN;
-
-	for( search = fs_searchpaths; search; search = search->next )
-	{
-		if( search->pack && !Q_stricmp( search->pack->filename, zipfile ))
-		{
-			if( already_loaded ) *already_loaded = true;
-			return true; // already loaded
-		}
-	}
-
-	if( already_loaded ) *already_loaded = false;
-
-	if( !Q_stricmp( ext, "pk3" ) )
-		zip = FS_LoadZip( zipfile, &errorcode );
-
-	if( zip )
-	{
-		string	fullpath;
-		int i;
-
-		search = (searchpath_t *)Mem_Calloc( fs_mempool, sizeof( searchpath_t ) );
-		search->zip = zip;
-		search->next = fs_searchpaths;
-		search->flags |= flags;
-		fs_searchpaths = search;
-
-		Con_Reportf( "Adding zipfile: %s (%i files)\n", zipfile, zip->numfiles );
-
-		// time to add in search list all the wads that contains in current pakfile (if do)
-		for( i = 0; i < zip->numfiles; i++ )
-		{
-			if( !Q_stricmp( COM_FileExtension( zip->files[i].name ), "wad" ))
-			{
-				Q_snprintf( fullpath, MAX_STRING, "%s/%s", zipfile, zip->files[i].name );
-				FS_AddWad_Fullpath( fullpath, NULL, flags );
-			}
-		}
-		return true;
-	}
-	else
-	{
-		if( errorcode != ZIP_LOAD_NO_FILES )
-			Con_Reportf( S_ERROR "FS_AddZip_Fullpath: unable to load zip \"%s\"\n", zipfile );
-		return false;
-	}
-}
 
 /*
 ================
@@ -1307,6 +485,7 @@ void FS_AddGameDirectory( const char *dir, uint flags )
 	search = (searchpath_t *)Mem_Calloc( fs_mempool, sizeof( searchpath_t ));
 	Q_strncpy( search->filename, dir, sizeof ( search->filename ));
 	search->next = fs_searchpaths;
+	search->type = SEARCHPATH_PLAIN;
 	search->flags = flags;
 	fs_searchpaths = search;
 }
@@ -1333,23 +512,19 @@ void FS_ClearSearchPath( void )
 		}
 		else fs_searchpaths = search->next;
 
-		if( search->pack )
+		switch( search->type )
 		{
-			if( search->pack->files )
-				Mem_Free( search->pack->files );
-			if( search->pack->handle >= 0 )
-				close( search->pack->handle );
-			Mem_Free( search->pack );
-		}
-
-		if( search->wad )
-		{
-			W_Close( search->wad );
-		}
-
-		if( search->zip )
-		{
-			Zip_Close(search->zip);
+		case SEARCHPATH_PAK:
+			FS_ClosePAK( search->pack );
+			break;
+		case SEARCHPATH_WAD:
+			FS_CloseWAD( search->wad );
+			break;
+		case SEARCHPATH_ZIP:
+			FS_CloseZIP( search->zip );
+			break;
+		default:
+			break;
 		}
 
 		Mem_Free( search );
@@ -1957,11 +1132,6 @@ static qboolean FS_ParseGameInfo( const char *gamedir, gameinfo_t *GameInfo )
 	return false;
 }
 
-poolhandle_t _Mem_AllocPool( const char *name, const char *filename, int fileline )
-{
-	return 0xDEADC0DE;
-}
-
 /*
 ================
 FS_AddGameHierarchy
@@ -2116,7 +1286,7 @@ search for library, assume index is valid
 qboolean FS_FindLibrary( const char *dllname, qboolean directpath, char *dllpath, size_t dllpathlen, qboolean *encrypted, qboolean *custom_loader, char *fullPath, size_t fullpathlen )
 {
 	searchpath_t	*search;
-	int		index, start, i, len;
+	int		index, start = 0, i, len;
 
 	fs_ext_path = directpath;
 
@@ -2164,7 +1334,7 @@ qboolean FS_FindLibrary( const char *dllname, qboolean directpath, char *dllpath
 		// NOTE: if search is NULL let the OS found library himself
 		Q_strncpy( fullPath, dllpath, fullpathlen );
 
-		if( search && ( search->wad || search->pack || search->zip ) )
+		if( search && search->type != SEARCHPATH_PLAIN )
 		{
 #if XASH_WIN32 && XASH_X86 // a1ba: custom loader is non-portable (I just don't want to touch it)
 			Con_Printf( S_WARN "%s: loading libraries from packs is deprecated "
@@ -2184,6 +1354,11 @@ qboolean FS_FindLibrary( const char *dllname, qboolean directpath, char *dllpath
 	fs_ext_path = false; // always reset direct paths
 
 	return true;
+}
+
+poolhandle_t _Mem_AllocPool( const char *name, const char *filename, int fileline )
+{
+	return 0xDEADC0DE;
 }
 
 void  _Mem_FreePool( poolhandle_t *poolptr, const char *filename, int fileline )
@@ -2263,7 +1438,7 @@ static qboolean FS_InitInterface( fs_memfuncs_t *memfuncs, fs_logfuncs_t *logfun
 		}
 		else
 		{
-			memcpy( &g_logfuncs, memfuncs, sizeof( *memfuncs ));
+			memcpy( &g_memfuncs, memfuncs, sizeof( *memfuncs ));
 		}
 	}
 	else
@@ -2383,7 +1558,7 @@ void FS_AllowDirectPaths( qboolean enable )
 FS_Shutdown
 ================
 */
-void FS_Shutdown( void )
+void FS_ShutdownStdio( void )
 {
 	int i;
 	// release gamedirs
@@ -2409,10 +1584,25 @@ void FS_Path_f( void )
 
 	for( s = fs_searchpaths; s; s = s->next )
 	{
-		if( s->pack ) Con_Printf( "%s (%i files)", s->pack->filename, s->pack->numfiles );
-		else if( s->wad ) Con_Printf( "%s (%i files)", s->wad->filename, s->wad->numlumps );
-		else if( s->zip ) Con_Printf( "%s (%i files)", s->zip->filename, s->zip->numfiles );
-		else Con_Printf( "%s", s->filename );
+		string info;
+
+		switch( s->type )
+		{
+		case SEARCHPATH_PAK:
+			FS_PrintPAKInfo( info, sizeof( info ), s->pack );
+			break;
+		case SEARCHPATH_WAD:
+			FS_PrintWADInfo( info, sizeof( info ), s->wad );
+			break;
+		case SEARCHPATH_ZIP:
+			FS_PrintZIPInfo( info, sizeof( info ), s->zip );
+			break;
+		case SEARCHPATH_PLAIN:
+			Q_strncpy( info, s->filename, sizeof( info ));
+			break;
+		}
+
+		Con_Printf( "%s", info );
 
 		if( s->flags & FS_GAMERODIR_PATH ) Con_Printf( " ^2rodir^7" );
 		if( s->flags & FS_GAMEDIR_PATH ) Con_Printf( " ^2gamedir^7" );
@@ -2431,7 +1621,7 @@ FS_SysFileTime
 Internal function used to determine filetime
 ====================
 */
-static int FS_SysFileTime( const char *filename )
+int FS_SysFileTime( const char *filename )
 {
 	struct stat buf;
 
@@ -2448,7 +1638,7 @@ FS_SysOpen
 Internal function used to create a file_t and open the relevant non-packed file on disk
 ====================
 */
-static file_t *FS_SysOpen( const char *filepath, const char *mode )
+file_t *FS_SysOpen( const char *filepath, const char *mode )
 {
 	file_t	*file;
 	int	mod, opt;
@@ -2547,7 +1737,7 @@ static int FS_DuplicateHandle( const char *filename, int handle, fs_offset_t pos
 }
 */
 
-static file_t *FS_OpenHandle( const char *syspath, int handle, fs_offset_t offset, fs_offset_t len )
+file_t *FS_OpenHandle( const char *syspath, int handle, fs_offset_t offset, fs_offset_t len )
 {
 	file_t *file = (file_t *)Mem_Calloc( fs_mempool, sizeof( file_t ));
 #ifndef XASH_REDUCE_FD
@@ -2576,44 +1766,6 @@ static file_t *FS_OpenHandle( const char *syspath, int handle, fs_offset_t offse
 	file->ungetc = EOF;
 
 	return file;
-}
-
-/*
-===========
-FS_OpenPackedFile
-
-Open a packed file using its package file descriptor
-===========
-*/
-file_t *FS_OpenPackedFile( pack_t *pack, int pack_ind )
-{
-	dpackfile_t	*pfile;
-
-	pfile = &pack->files[pack_ind];
-
-	return FS_OpenHandle( pack->filename, pack->handle, pfile->filepos, pfile->filelen );
-}
-
-/*
-===========
-FS_OpenZipFile
-
-Open a packed file using its package file descriptor
-===========
-*/
-file_t *FS_OpenZipFile( zip_t *zip, int pack_ind )
-{
-	zipfile_t	*pfile;
-	pfile = &zip->files[pack_ind];
-
-	// compressed files handled in Zip_LoadFile
-	if( pfile->flags != ZIP_COMPRESSION_NO_COMPRESSION )
-	{
-		Con_Printf( S_ERROR "%s: can't open compressed file %s\n", __FUNCTION__, pfile->name );
-		return NULL;
-	}
-
-	return FS_OpenHandle( zip->filename, zip->handle, pfile->offset, pfile->size );
 }
 
 /*
@@ -2713,7 +1865,7 @@ Return the searchpath where the file was found (or NULL)
 and the file index in the package if relevant
 ====================
 */
-static searchpath_t *FS_FindFile( const char *name, int *index, qboolean gamedironly )
+searchpath_t *FS_FindFile( const char *name, int *index, qboolean gamedironly )
 {
 	searchpath_t	*search;
 	char		*pEnvPath;
@@ -2725,107 +1877,31 @@ static searchpath_t *FS_FindFile( const char *name, int *index, qboolean gamedir
 			continue;
 
 		// is the element a pak file?
-		if( search->pack )
+		if( search->type == SEARCHPATH_PAK )
 		{
-			int	left, right, middle;
-			pack_t	*pak;
-
-			pak = search->pack;
-
-			// look for the file (binary search)
-			left = 0;
-			right = pak->numfiles - 1;
-			while( left <= right )
+			int pack_ind = FS_FindFilePAK( search->pack, name );
+			if( pack_ind >= 0 )
 			{
-				int	diff;
-
-				middle = (left + right) / 2;
-				diff = Q_stricmp( pak->files[middle].name, name );
-
-				// Found it
-				if( !diff )
-				{
-					if( index ) *index = middle;
-					return search;
-				}
-
-				// if we're too far in the list
-				if( diff > 0 )
-					right = middle - 1;
-				else left = middle + 1;
-			}
-		}
-		else if( search->wad )
-		{
-			dlumpinfo_t	*lump;
-			signed char		type = W_TypeFromExt( name );
-			qboolean		anywadname = true;
-			string		wadname, wadfolder;
-			string		shortname;
-
-			// quick reject by filetype
-			if( type == TYP_NONE ) continue;
-			COM_ExtractFilePath( name, wadname );
-			wadfolder[0] = '\0';
-
-			if( COM_CheckStringEmpty( wadname ) )
-			{
-				COM_FileBase( wadname, wadname );
-				Q_strncpy( wadfolder, wadname, sizeof( wadfolder ));
-				COM_DefaultExtension( wadname, ".wad" );
-				anywadname = false;
-			}
-
-			// make wadname from wad fullpath
-			COM_FileBase( search->wad->filename, shortname );
-			COM_DefaultExtension( shortname, ".wad" );
-
-			// quick reject by wadname
-			if( !anywadname && Q_stricmp( wadname, shortname ))
-				continue;
-
-			// NOTE: we can't using long names for wad,
-			// because we using original wad names[16];
-			COM_FileBase( name, shortname );
-
-			lump = W_FindLump( search->wad, shortname, type );
-
-			if( lump )
-			{
-				if( index )
-					*index = lump - search->wad->lumps;
+				if( index ) *index = pack_ind;
 				return search;
 			}
 		}
-		else if( search->zip )
+		else if( search->type == SEARCHPATH_WAD )
 		{
-			int     left, right, middle;
-			zip_t  *zip;
-
-			zip = search->zip;
-
-			// look for the file (binary search)
-			left = 0;
-			right = zip->numfiles - 1;
-
-			while( left <= right )
+			int pack_ind = FS_FindFileWAD( search->wad, name );
+			if( pack_ind >= 0 )
 			{
-				int     diff;
-
-				middle = (left + right) / 2;
-				diff = Q_stricmp( zip->files[middle].name, name );
-
-				// Found it
-				if( !diff )
-				{
-					if( index ) *index = middle;
-					return search;
-				}
-
-				// if we're too far in the list
-				if( diff > 0 )
-					right = middle - 1;
-				else left = middle + 1;
+				if( index ) *index = pack_ind;
+				return search;
+			}
+		}
+		else if( search->type == SEARCHPATH_ZIP )
+		{
+			int pack_ind = FS_FindFileZIP( search->zip, name );
+			if( pack_ind >= 0 )
+			{
+				if( index ) *index = pack_ind;
+				return search;
 			}
 		}
 		else
@@ -2861,26 +1937,6 @@ static searchpath_t *FS_FindFile( const char *name, int *index, qboolean gamedir
 				*index = -1;
 			return search;
 		}
-
-#if 0
-		// search for environment path
-		while( ( pEnvPath = getenv( "Path" ) ) )
-		{
-			char *end = Q_strchr( pEnvPath, ';' );
-			if( !end ) break;
-			Q_strncpy( search->filename, pEnvPath, (end - pEnvPath) + 1 );
-			Q_strcat( search->filename, PATH_SPLITTER );
-			Q_snprintf( netpath, MAX_SYSPATH, "%s%s", search->filename, name );
-
-			if( FS_SysFileExists( netpath, !( search->flags & FS_CUSTOM_PATH ) ))
-			{
-				if( index != NULL )
-					*index = -1;
-				return search;
-			}
-			pEnvPath += (end - pEnvPath) + 1; // move pointer
-		}
-#endif // 0
 	}
 
 	if( index != NULL )
@@ -2908,19 +1964,23 @@ file_t *FS_OpenReadFile( const char *filename, const char *mode, qboolean gamedi
 	if( search == NULL )
 		return NULL;
 
-	if( search->pack )
-		return FS_OpenPackedFile( search->pack, pack_ind );
-	else if( search->wad )
-		return NULL; // let W_LoadFile get lump correctly
-	else if( search->zip )
-		return FS_OpenZipFile( search->zip, pack_ind );
-	else if( pack_ind < 0 )
+	switch( search->type )
 	{
-		char	path [MAX_SYSPATH];
+	case SEARCHPATH_PAK:
+		return FS_OpenPackedFile( search->pack, pack_ind );
+	case SEARCHPATH_WAD:
+		return NULL; // let W_LoadFile get lump correctly
+	case SEARCHPATH_ZIP:
+		return FS_OpenZipFile( search->zip, pack_ind );
+	default:
+		if( pack_ind < 0 )
+		{
+			char	path [MAX_SYSPATH];
 
-		// found in the filesystem?
-		Q_sprintf( path, "%s%s", search->filename, filename );
-		return FS_SysOpen( path, mode );
+			// found in the filesystem?
+			Q_sprintf( path, "%s%s", search->filename, filename );
+			return FS_SysOpen( path, mode );
+		}
 	}
 
 	return NULL;
@@ -3349,10 +2409,10 @@ byte *FS_LoadFile( const char *path, fs_offset_t *filesizeptr, qboolean gamediro
 	}
 	else
 	{
-		buf = W_LoadFile( path, &filesize, gamedironly );
+		buf = FS_LoadWADFile( path, &filesize, gamedironly );
 
 		if( !buf )
-			buf = Zip_LoadFile( path, &filesize, gamedironly );
+			buf = FS_LoadZIPFile( path, &filesize, gamedironly );
 
 	}
 
@@ -3582,19 +2642,23 @@ int FS_FileTime( const char *filename, qboolean gamedironly )
 	search = FS_FindFile( filename, &pack_ind, gamedironly );
 	if( !search ) return -1; // doesn't exist
 
-	if( search->pack ) // grab pack filetime
-		return search->pack->filetime;
-	else if( search->wad ) // grab wad filetime
-		return search->wad->filetime;
-	else if( search->zip )
-		return search->zip->filetime;
-	else if( pack_ind < 0 )
+	switch( search->type )
 	{
-		// found in the filesystem?
-		char	path [MAX_SYSPATH];
+	case SEARCHPATH_PAK:
+		return FS_FileTimePAK( search->pack );
+	case SEARCHPATH_WAD:
+		return FS_FileTimeWAD( search->wad );
+	case SEARCHPATH_ZIP:
+		return FS_FileTimeZIP( search->zip );
+	default:
+		if( pack_ind < 0 )
+		{
+			char	path [MAX_SYSPATH];
 
-		Q_sprintf( path, "%s%s", search->filename, filename );
-		return FS_SysFileTime( path );
+			// found in the filesystem?
+			Q_sprintf( path, "%s%s", search->filename, filename );
+			return FS_SysFileTime( path );
+		}
 	}
 
 	return -1; // doesn't exist
@@ -3726,154 +2790,18 @@ search_t *FS_Search( const char *pattern, int caseinsensitive, int gamedironly )
 			continue;
 
 		// is the element a pak file?
-		if( searchpath->pack )
+		if( searchpath->type == SEARCHPATH_PAK )
 		{
 			// look through all the pak file elements
-			pak = searchpath->pack;
-			for( i = 0; i < pak->numfiles; i++ )
-			{
-				Q_strncpy( temp, pak->files[i].name, sizeof( temp ));
-				while( temp[0] )
-				{
-					if( matchpattern( temp, (char *)pattern, true ))
-					{
-						for( resultlistindex = 0; resultlistindex < resultlist.numstrings; resultlistindex++ )
-						{
-							if( !Q_strcmp( resultlist.strings[resultlistindex], temp ))
-								break;
-						}
-
-						if( resultlistindex == resultlist.numstrings )
-							stringlistappend( &resultlist, temp );
-					}
-
-					// strip off one path element at a time until empty
-					// this way directories are added to the listing if they match the pattern
-					slash = Q_strrchr( temp, '/' );
-					backslash = Q_strrchr( temp, '\\' );
-					colon = Q_strrchr( temp, ':' );
-					separator = temp;
-					if( separator < slash )
-						separator = slash;
-					if( separator < backslash )
-						separator = backslash;
-					if( separator < colon )
-						separator = colon;
-					*((char *)separator) = 0;
-				}
-			}
+			FS_SearchPAK( &resultlist, searchpath->pack, pattern );
 		}
-		else if( searchpath->zip )
+		else if( searchpath->type == SEARCHPATH_ZIP )
 		{
-			zip = searchpath->zip;
-			for( i = 0; i < zip->numfiles; i++ )
-			{
-				Q_strncpy( temp, zip->files[i].name, sizeof(temp) );
-				while( temp[0] )
-				{
-					if( matchpattern( temp, (char *)pattern, true ))
-					{
-						for( resultlistindex = 0; resultlistindex < resultlist.numstrings; resultlistindex++ )
-						{
-							if( !Q_strcmp( resultlist.strings[resultlistindex], temp ))
-								break;
-						}
-
-						if( resultlistindex == resultlist.numstrings )
-							stringlistappend( &resultlist, temp );
-					}
-
-					// strip off one path element at a time until empty
-					// this way directories are added to the listing if they match the pattern
-					slash = Q_strrchr( temp, '/' );
-					backslash = Q_strrchr( temp, '\\' );
-					colon = Q_strrchr( temp, ':' );
-					separator = temp;
-					if( separator < slash )
-						separator = slash;
-					if( separator < backslash )
-						separator = backslash;
-					if( separator < colon )
-						separator = colon;
-					*((char *)separator) = 0;
-				}
-			}
+			FS_SearchZIP( &resultlist, searchpath->zip, pattern );
 		}
-		else if( searchpath->wad )
+		else if( searchpath->type == SEARCHPATH_WAD )
 		{
-			string	wadpattern, wadname, temp2;
-			signed char	type = W_TypeFromExt( pattern );
-			qboolean	anywadname = true;
-			string	wadfolder;
-
-			// quick reject by filetype
-			if( type == TYP_NONE ) continue;
-			COM_ExtractFilePath( pattern, wadname );
-			COM_FileBase( pattern, wadpattern );
-			wadfolder[0] = '\0';
-
-			if( COM_CheckStringEmpty( wadname ))
-			{
-				COM_FileBase( wadname, wadname );
-				Q_strncpy( wadfolder, wadname, sizeof( wadfolder ));
-				COM_DefaultExtension( wadname, ".wad" );
-				anywadname = false;
-			}
-
-			// make wadname from wad fullpath
-			COM_FileBase( searchpath->wad->filename, temp2 );
-			COM_DefaultExtension( temp2, ".wad" );
-
-			// quick reject by wadname
-			if( !anywadname && Q_stricmp( wadname, temp2 ))
-				continue;
-
-			// look through all the wad file elements
-			wad = searchpath->wad;
-
-			for( i = 0; i < wad->numlumps; i++ )
-			{
-				// if type not matching, we already have no chance ...
-				if( type != TYP_ANY && wad->lumps[i].type != type )
-					continue;
-
-				// build the lumpname with image suffix (if present)
-				Q_strncpy( temp, wad->lumps[i].name, sizeof( temp ));
-
-				while( temp[0] )
-				{
-					if( matchpattern( temp, wadpattern, true ))
-					{
-						for( resultlistindex = 0; resultlistindex < resultlist.numstrings; resultlistindex++ )
-						{
-							if( !Q_strcmp( resultlist.strings[resultlistindex], temp ))
-								break;
-						}
-
-						if( resultlistindex == resultlist.numstrings )
-						{
-							// build path: wadname/lumpname.ext
-							Q_snprintf( temp2, sizeof(temp2), "%s/%s", wadfolder, temp );
-							COM_DefaultExtension( temp2, va(".%s", W_ExtFromType( wad->lumps[i].type )));
-							stringlistappend( &resultlist, temp2 );
-						}
-					}
-
-					// strip off one path element at a time until empty
-					// this way directories are added to the listing if they match the pattern
-					slash = Q_strrchr( temp, '/' );
-					backslash = Q_strrchr( temp, '\\' );
-					colon = Q_strrchr( temp, ':' );
-					separator = temp;
-					if( separator < slash )
-						separator = slash;
-					if( separator < backslash )
-						separator = backslash;
-					if( separator < colon )
-						separator = colon;
-					*((char *)separator) = 0;
-				}
-			}
+			FS_SearchWAD( &resultlist, searchpath->wad, pattern );
 		}
 		else
 		{
@@ -3940,378 +2868,4 @@ void FS_InitMemory( void )
 {
 	fs_mempool = Mem_AllocPool( "FileSystem Pool" );
 	fs_searchpaths = NULL;
-}
-
-/*
-=============================================================================
-
-WADSYSTEM PRIVATE ROUTINES
-
-=============================================================================
-*/
-// associate extension with wad type
-static const wadtype_t wad_types[7] =
-{
-{ "pal", TYP_PALETTE	}, // palette
-{ "dds", TYP_DDSTEX 	}, // DDS image
-{ "lmp", TYP_GFXPIC		}, // quake1, hl pic
-{ "fnt", TYP_QFONT		}, // hl qfonts
-{ "mip", TYP_MIPTEX		}, // hl/q1 mip
-{ "txt", TYP_SCRIPT		}, // scripts
-{ NULL,  TYP_NONE		}
-};
-
-/*
-===========
-W_TypeFromExt
-
-Extracts file type from extension
-===========
-*/
-static signed char W_TypeFromExt( const char *lumpname )
-{
-	const char	*ext = COM_FileExtension( lumpname );
-	const wadtype_t	*type;
-
-	// we not known about filetype, so match only by filename
-	if( !Q_strcmp( ext, "*" ) || !Q_strcmp( ext, "" ))
-		return TYP_ANY;
-
-	for( type = wad_types; type->ext; type++ )
-	{
-		if( !Q_stricmp( ext, type->ext ))
-			return type->type;
-	}
-	return TYP_NONE;
-}
-
-/*
-===========
-W_ExtFromType
-
-Convert type to extension
-===========
-*/
-static const char *W_ExtFromType( signed char lumptype )
-{
-	const wadtype_t	*type;
-
-	// we not known aboyt filetype, so match only by filename
-	if( lumptype == TYP_NONE || lumptype == TYP_ANY )
-		return "";
-
-	for( type = wad_types; type->ext; type++ )
-	{
-		if( lumptype == type->type )
-			return type->ext;
-	}
-	return "";
-}
-
-/*
-===========
-W_FindLump
-
-Serach for already existed lump
-===========
-*/
-static dlumpinfo_t *W_FindLump( wfile_t *wad, const char *name, const signed char matchtype )
-{
-	int	left, right;
-
-	if( !wad || !wad->lumps || matchtype == TYP_NONE )
-		return NULL;
-
-	// look for the file (binary search)
-	left = 0;
-	right = wad->numlumps - 1;
-
-	while( left <= right )
-	{
-		int	middle = (left + right) / 2;
-		int	diff = Q_stricmp( wad->lumps[middle].name, name );
-
-		if( !diff )
-		{
-			if(( matchtype == TYP_ANY ) || ( matchtype == wad->lumps[middle].type ))
-				return &wad->lumps[middle]; // found
-			else if( wad->lumps[middle].type < matchtype )
-				diff = 1;
-			else if( wad->lumps[middle].type > matchtype )
-				diff = -1;
-			else break; // not found
-		}
-
-		// if we're too far in the list
-		if( diff > 0 ) right = middle - 1;
-		else left = middle + 1;
-	}
-
-	return NULL;
-}
-
-/*
-====================
-W_AddFileToWad
-
-Add a file to the list of files contained into a package
-and sort LAT in alpha-bethical order
-====================
-*/
-static dlumpinfo_t *W_AddFileToWad( const char *name, wfile_t *wad, dlumpinfo_t *newlump )
-{
-	int		left, right;
-	dlumpinfo_t	*plump;
-
-	// look for the slot we should put that file into (binary search)
-	left = 0;
-	right = wad->numlumps - 1;
-
-	while( left <= right )
-	{
-		int	middle = ( left + right ) / 2;
-		int	diff = Q_stricmp( wad->lumps[middle].name, name );
-
-		if( !diff )
-		{
-			if( wad->lumps[middle].type < newlump->type )
-				diff = 1;
-			else if( wad->lumps[middle].type > newlump->type )
-				diff = -1;
-			else Con_Reportf( S_WARN "Wad %s contains the file %s several times\n", wad->filename, name );
-		}
-
-		// If we're too far in the list
-		if( diff > 0 ) right = middle - 1;
-		else left = middle + 1;
-	}
-
-	// we have to move the right of the list by one slot to free the one we need
-	plump = &wad->lumps[left];
-	memmove( plump + 1, plump, ( wad->numlumps - left ) * sizeof( *plump ));
-	wad->numlumps++;
-
-	*plump = *newlump;
-	memcpy( plump->name, name, sizeof( plump->name ));
-
-	return plump;
-}
-
-/*
-===========
-W_ReadLump
-
-reading lump into temp buffer
-===========
-*/
-byte *W_ReadLump( wfile_t *wad, dlumpinfo_t *lump, fs_offset_t *lumpsizeptr )
-{
-	size_t	oldpos, size = 0;
-	byte	*buf;
-
-	// assume error
-	if( lumpsizeptr ) *lumpsizeptr = 0;
-
-	// no wads loaded
-	if( !wad || !lump ) return NULL;
-
-	oldpos = FS_Tell( wad->handle ); // don't forget restore original position
-
-	if( FS_Seek( wad->handle, lump->filepos, SEEK_SET ) == -1 )
-	{
-		Con_Reportf( S_ERROR "W_ReadLump: %s is corrupted\n", lump->name );
-		FS_Seek( wad->handle, oldpos, SEEK_SET );
-		return NULL;
-	}
-
-	buf = (byte *)Mem_Malloc( wad->mempool, lump->disksize );
-	size = FS_Read( wad->handle, buf, lump->disksize );
-
-	if( size < lump->disksize )
-	{
-		Con_Reportf( S_WARN "W_ReadLump: %s is probably corrupted\n", lump->name );
-		FS_Seek( wad->handle, oldpos, SEEK_SET );
-		Mem_Free( buf );
-		return NULL;
-	}
-
-	if( lumpsizeptr ) *lumpsizeptr = lump->disksize;
-	FS_Seek( wad->handle, oldpos, SEEK_SET );
-
-	return buf;
-}
-
-/*
-=============================================================================
-
-WADSYSTEM PUBLIC BASE FUNCTIONS
-
-=============================================================================
-*/
-/*
-===========
-W_Open
-
-open the wad for reading & writing
-===========
-*/
-wfile_t *W_Open( const char *filename, int *error )
-{
-	wfile_t		*wad = (wfile_t *)Mem_Calloc( fs_mempool, sizeof( wfile_t ));
-	const char *basename;
-	int		i, lumpcount;
-	dlumpinfo_t	*srclumps;
-	size_t		lat_size;
-	dwadinfo_t	header;
-
-	// NOTE: FS_Open is load wad file from the first pak in the list (while fs_ext_path is false)
-	if( fs_ext_path ) basename = filename;
-	else basename = COM_FileWithoutPath( filename );
-
-	wad->handle = FS_Open( basename, "rb", false );
-
-	// HACKHACK: try to open WAD by full path for RoDir, when searchpaths are not ready
-	if( COM_CheckStringEmpty( fs_rodir ) && fs_ext_path && wad->handle == NULL )
-		wad->handle = FS_SysOpen( filename, "rb" );
-
-	if( wad->handle == NULL )
-	{
-		Con_Reportf( S_ERROR "W_Open: couldn't open %s\n", filename );
-		if( error ) *error = WAD_LOAD_COULDNT_OPEN;
-		W_Close( wad );
-		return NULL;
-	}
-
-	// copy wad name
-	Q_strncpy( wad->filename, filename, sizeof( wad->filename ));
-	wad->filetime = FS_SysFileTime( filename );
-	wad->mempool = Mem_AllocPool( filename );
-
-	if( FS_Read( wad->handle, &header, sizeof( dwadinfo_t )) != sizeof( dwadinfo_t ))
-	{
-		Con_Reportf( S_ERROR "W_Open: %s can't read header\n", filename );
-		if( error ) *error = WAD_LOAD_BAD_HEADER;
-		W_Close( wad );
-		return NULL;
-	}
-
-	if( header.ident != IDWAD2HEADER && header.ident != IDWAD3HEADER )
-	{
-		Con_Reportf( S_ERROR "W_Open: %s is not a WAD2 or WAD3 file\n", filename );
-		if( error ) *error = WAD_LOAD_BAD_HEADER;
-		W_Close( wad );
-		return NULL;
-	}
-
-	lumpcount = header.numlumps;
-
-	if( lumpcount >= MAX_FILES_IN_WAD )
-	{
-		Con_Reportf( S_WARN "W_Open: %s is full (%i lumps)\n", filename, lumpcount );
-		if( error ) *error = WAD_LOAD_TOO_MANY_FILES;
-	}
-	else if( lumpcount <= 0 )
-	{
-		Con_Reportf( S_ERROR "W_Open: %s has no lumps\n", filename );
-		if( error ) *error = WAD_LOAD_NO_FILES;
-		W_Close( wad );
-		return NULL;
-	}
-	else if( error ) *error = WAD_LOAD_OK;
-
-	wad->infotableofs = header.infotableofs; // save infotableofs position
-
-	if( FS_Seek( wad->handle, wad->infotableofs, SEEK_SET ) == -1 )
-	{
-		Con_Reportf( S_ERROR "W_Open: %s can't find lump allocation table\n", filename );
-		if( error ) *error = WAD_LOAD_BAD_FOLDERS;
-		W_Close( wad );
-		return NULL;
-	}
-
-	lat_size = lumpcount * sizeof( dlumpinfo_t );
-
-	// NOTE: lumps table can be reallocated for O_APPEND mode
-	srclumps = (dlumpinfo_t *)Mem_Malloc( wad->mempool, lat_size );
-
-	if( FS_Read( wad->handle, srclumps, lat_size ) != lat_size )
-	{
-		Con_Reportf( S_ERROR "W_ReadLumpTable: %s has corrupted lump allocation table\n", wad->filename );
-		if( error ) *error = WAD_LOAD_CORRUPTED;
-		Mem_Free( srclumps );
-		W_Close( wad );
-		return NULL;
-	}
-
-	// starting to add lumps
-	wad->lumps = (dlumpinfo_t *)Mem_Calloc( wad->mempool, lat_size );
-	wad->numlumps = 0;
-
-	// sort lumps for binary search
-	for( i = 0; i < lumpcount; i++ )
-	{
-		char	name[16];
-		int	k;
-
-		// cleanup lumpname
-		Q_strnlwr( srclumps[i].name, name, sizeof( srclumps[i].name ));
-
-		// check for '*' symbol issues (quake1)
-		k = Q_strlen( Q_strrchr( name, '*' ));
-		if( k ) name[Q_strlen( name ) - k] = '!';
-
-		// check for Quake 'conchars' issues (only lmp loader really allows to read this lame pic)
-		if( srclumps[i].type == 68 && !Q_stricmp( srclumps[i].name, "conchars" ))
-			srclumps[i].type = TYP_GFXPIC;
-
-		W_AddFileToWad( name, wad, &srclumps[i] );
-	}
-
-	// release source lumps
-	Mem_Free( srclumps );
-
-	// and leave the file open
-	return wad;
-}
-
-/*
-===========
-W_Close
-
-finalize wad or just close
-===========
-*/
-void W_Close( wfile_t *wad )
-{
-	if( !wad ) return;
-
-	Mem_FreePool( &wad->mempool );
-	if( wad->handle != NULL )
-		FS_Close( wad->handle );
-	Mem_Free( wad ); // free himself
-}
-
-/*
-=============================================================================
-
-FILESYSTEM IMPLEMENTATION
-
-=============================================================================
-*/
-/*
-===========
-W_LoadFile
-
-loading lump into the tmp buffer
-===========
-*/
-static byte *W_LoadFile( const char *path, fs_offset_t *lumpsizeptr, qboolean gamedironly )
-{
-	searchpath_t	*search;
-	int		index;
-
-	search = FS_FindFile( path, &index, gamedironly );
-	if( search && search->wad )
-		return W_ReadLump( search->wad, &search->wad->lumps[index], lumpsizeptr );
-	return NULL;
 }

@@ -3,6 +3,7 @@
 #define FSINFO_H
 
 #include "xash3d_types.h"
+#include "const.h"
 #include "com_model.h"
 
 typedef struct gameinfo_s
@@ -66,10 +67,5 @@ typedef struct fsinfo_s
 	gameinfo_t	*games[MAX_MODS];	// environment games (founded at each engine start)
 	int		numgames;
 } fsinfo_t;
-
-extern fsinfo_t FI;
-#define GI           FI.GameInfo
-#define FS_Gamedir() GI->gamefolder
-#define FS_Title()   GI->title
 
 #endif // FSINFO_H
